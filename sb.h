@@ -16,16 +16,13 @@
 #ifndef SB_H_
 #define SB_H_
 
-#include <stddef.h>
-
+// SBDEF is prefixed to all function signatures and can be defined by the user.
+// A common use-case is '#define SBDEF static inline' when sb.h is used in a
+// single translation unit.
 #ifndef SBDEF
 #define SBDEF
 #endif
 
-#ifndef SB_ASSERT
-#include <assert.h>
-#define SB_ASSERT(cond) assert((cond))
-#endif
 
 #if !defined(SB_REALLOC) && !defined(SB_FREE)
 #include <stdlib.h>
@@ -40,6 +37,7 @@
 #endif
 
 
+
 #ifndef SB_START_SIZE
 #define SB_START_SIZE 64u
 #endif
@@ -51,7 +49,6 @@
 #ifndef SB_LIN_THRESHOLD
 #define SB_LIN_THRESHOLD (1u * 1024u * 1024u) // 1 MB before switching from growth factor to linear growth
 #endif
-
 
 #ifndef SB_LIN_GROWTH_FACTOR
 #define SB_LIN_GROWTH_FACTOR (256u * 1024u) // 256 KB after threshold
@@ -77,6 +74,16 @@
 #define SB_NOEXCEPT
 #endif
 
+#ifdef __cplusplus
+#define SB_NULL nullptr
+#else
+#define SB_NULL NULL
+#endif
+
+
+
+#include <stdbool.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -90,14 +97,7 @@ typedef struct {
 } StringBuilder;
 
 
-
-#ifdef __cplusplus
-    #define SB_INIT {};
-#else
-    #define SB_INIT {0};
-#endif
-
-// Initialize an empty string. Equivelant to SB_INIT.
+// Initialize an empty string builder
 SB_NODISCARD SBDEF StringBuilder sb_init(SB_NO_PARAMS) SB_NOEXCEPT;
 
 // Free builder buffer and reset
@@ -106,25 +106,27 @@ SBDEF void sb_free(StringBuilder *sb) SB_NOEXCEPT;
 // Reset builder without deallocating
 SBDEF void sb_reset(StringBuilder *sb) SB_NOEXCEPT;
 
-SBDEF void sb_reserve(StringBuilder *sb, size_t new_cap) SB_NOEXCEPT;
+// Notify an intent to append data. Will if necessary allocate memory
+// to fit at least new_cap characters.
+SB_NODISCARD SBDEF bool sb_reserve(StringBuilder *sb, size_t new_cap) SB_NOEXCEPT;
 
 // Append one sized string to builder
-SBDEF void sb_append_one_n(StringBuilder *sb, const char *str, size_t len) SB_NOEXCEPT;
+SB_NODISCARD SBDEF bool sb_append_one_n(StringBuilder *sb, const char *str, size_t len) SB_NOEXCEPT;
 // Append one NULL-terminated string to builder
-SBDEF void sb_append_one(StringBuilder *sb, const char *str) SB_NOEXCEPT;
+SB_NODISCARD SBDEF bool sb_append_one(StringBuilder *sb, const char *str) SB_NOEXCEPT;
 
 // Append several NULL-terminated strings to builder.
-#define sb_append(sb_ptr, ...) sb_append_((sb_ptr), __VA_ARGS__, NULL)
-SBDEF void sb_append_(StringBuilder *sb, const char *new_data1, ...) SB_NOEXCEPT; // NOTE: Use sb_append() without underscore suffix
+#define sb_append(sb_ptr, ...) sb_append_((sb_ptr), __VA_ARGS__, SB_NULL)
+SB_NODISCARD SBDEF bool sb_append_(StringBuilder *sb, const char *new_data1, ...) SB_NOEXCEPT;
 
 // Append one character to builder
-SBDEF void sb_append_char(StringBuilder *sb, char c) SB_NOEXCEPT;
+SB_NODISCARD SBDEF bool sb_append_char(StringBuilder *sb, char c) SB_NOEXCEPT;
 
 // Append one string builder's content to another's. 'app' is appended to 'sb'.
-SBDEF void sb_append_sb(StringBuilder *sb, StringBuilder *app) SB_NOEXCEPT;
+SB_NODISCARD SBDEF bool sb_append_sb(StringBuilder *sb, StringBuilder *app) SB_NOEXCEPT;
 
 // Append a formatted string to builder. Formatting follows sprintf semantics.
-SBDEF void sb_appendf(StringBuilder *sb, const char *fmt, ...) SB_NOEXCEPT;
+SB_NODISCARD SBDEF bool sb_appendf(StringBuilder *sb, const char *fmt, ...) SB_NOEXCEPT;
 
 // Allocate and return a null-terminated string of the contents of the builder. Caller must free with SB_FREE()
 SB_NODISCARD SBDEF char *sb_to_cstr(StringBuilder *sb) SB_NOEXCEPT;
@@ -144,7 +146,7 @@ SB_NODISCARD SBDEF char *sb_to_cstr(StringBuilder *sb) SB_NOEXCEPT;
 SBDEF StringBuilder
 sb_init(SB_NO_PARAMS) SB_NOEXCEPT
 {
-    StringBuilder result = SB_INIT;
+    StringBuilder result = {SB_NULL, 0, 0};
 
     return result;
 }
@@ -153,7 +155,7 @@ SBDEF void
 sb_free(StringBuilder *sb) SB_NOEXCEPT
 {
     SB_FREE(sb->buffer);
-    sb->buffer   = NULL;
+    sb->buffer   = SB_NULL;
     sb->capacity = 0;
     sb->size     = 0;
 }
@@ -162,110 +164,138 @@ SBDEF void
 sb_reset(StringBuilder *sb) SB_NOEXCEPT
 {
     sb->size = 0;
+    sb->buffer[0] = '\0';
 }
 
-static inline void
+static inline bool
 sb_grow_to_fit_(StringBuilder *sb, size_t n) SB_NOEXCEPT
 {
-    if (n <= sb->capacity) return;
+    size_t np1 = n + 1; // 'n plus 1' to account for trailing NULL-terminator
+
+    if (np1 <= sb->capacity) return true;
+
+    size_t new_cap = sb->capacity ? sb->capacity : SB_START_SIZE;
 
     // Exponential growth until threshold
-    size_t new_cap = sb->capacity ? sb->capacity : SB_START_SIZE;
-    while (new_cap < n && new_cap < SB_LIN_THRESHOLD) {
-        size_t pot = new_cap * SB_EXP_GROWTH_FACTOR;
-        if (pot < new_cap) new_cap = n; // Overflow fallback
-        new_cap = pot;
-    }
+    while (new_cap < np1 && new_cap < SB_LIN_THRESHOLD) new_cap *= SB_EXP_GROWTH_FACTOR;
 
     // Linear growth after threshold
-    while (new_cap < n) {
-        size_t pot = new_cap + SB_LIN_GROWTH_FACTOR;
-        if (pot < new_cap) new_cap = n; // Overflow fallback
-        new_cap = pot;
-    }
+    while (new_cap < np1) new_cap += SB_LIN_GROWTH_FACTOR;
 
     void *new_buffer = SB_REALLOC(sb->buffer, new_cap);
-    SB_ASSERT(new_buffer != NULL);
+    if (!new_buffer) {
+        sb_free(sb);
+        return false;
+    }
 
     sb->buffer = (char *)new_buffer;
     sb->capacity = new_cap;
+
+    sb->buffer[sb->size] = '\0';
+
+    return true;
 }
 
-SBDEF void
+SBDEF bool
 sb_reserve(StringBuilder *sb, size_t new_cap) SB_NOEXCEPT
 {
-    sb_grow_to_fit_(sb, new_cap);
+    if (!sb_grow_to_fit_(sb, new_cap)) return false;
+    sb->buffer[sb->size] = '\0';
+    return true;
 }
 
-SBDEF void
+SBDEF bool
 sb_append_one_n(StringBuilder *sb, const char *str, size_t len) SB_NOEXCEPT
 {
-    sb_grow_to_fit_(sb, sb->size + len);
+    if (!sb_grow_to_fit_(sb, sb->size + len)) return false;
 
     memcpy(sb->buffer+sb->size, str, len);
     sb->size += len;
+    sb->buffer[sb->size] = '\0';
+
+    return true;
 }
 
-SBDEF void
+SBDEF bool
 sb_append_one(StringBuilder *sb, const char *str) SB_NOEXCEPT
 {
     size_t len = strlen(str);
-    sb_append_one_n(sb, str, len);
+    return sb_append_one_n(sb, str, len);
 }
 
-SBDEF void
+SBDEF bool
 sb_append_(StringBuilder *sb, const char *new_data1, ...) SB_NOEXCEPT
 {
     va_list args;
     va_start(args, new_data1);
 
+    bool ok = true;
     const char *data = new_data1;
-    while (data != NULL) {
-        sb_append_one(sb, data);
+    while (ok && data != SB_NULL) {
+        if (!sb_append_one(sb, data)) ok = false;
         data = va_arg(args, const char *);
     }
 
     va_end(args);
+
+    return ok;
 }
 
-SBDEF void
+SBDEF bool
 sb_append_char(StringBuilder *sb, char c) SB_NOEXCEPT
 {
-    sb_grow_to_fit_(sb, sb->size + 1);
+    if (!sb_grow_to_fit_(sb, sb->size + 1)) return false;
     sb->buffer[sb->size++] = c;
+    sb->buffer[sb->size] = '\0';
+    return true;
 }
 
-SBDEF void
+SBDEF bool
 sb_append_sb(StringBuilder *sb, StringBuilder *app) SB_NOEXCEPT
 {
-    sb_append_one_n(sb, app->buffer, app->size);
+    if (app->size) return sb_append_one_n(sb, app->buffer, app->size);
+    return true;
 }
 
-SBDEF void
+SBDEF bool
 sb_appendf(StringBuilder *sb, const char *fmt, ...) SB_NOEXCEPT
 {
     va_list args;
 
     va_start(args, fmt);
-    int len = vsnprintf(NULL, 0, fmt, args);
+    int len = vsnprintf(SB_NULL, 0, fmt, args);
     va_end(args);
+    if (len < 0) {
+        sb_free(sb);
+        return false;
+    }
     size_t len_z = len + 1;
 
-    sb_grow_to_fit_(sb, sb->size + len_z);
+    if (!sb_grow_to_fit_(sb, sb->size + len_z)) return false;
 
     va_start(args, fmt);
     vsnprintf(sb->buffer + sb->size, len_z, fmt, args);
     va_end(args);
+
     sb->size += len;
+
+    sb->buffer[sb->size] = '\0';
+
+    return true;
 }
 
 SBDEF char *
 sb_to_cstr(StringBuilder *sb) SB_NOEXCEPT
 {
-    if (!sb->buffer || sb->size == 0) return NULL;
+    if (sb->buffer == SB_NULL || sb->size == 0) {
+        char *z = (char *)SB_REALLOC(SB_NULL, 1);
+        if (!z) return SB_NULL;
+        *z = '\0';
+        return z;
+    }
 
-    char *buf = (char *)SB_REALLOC(NULL, sb->size + 1);
-    if (!buf) return NULL;
+    char *buf = (char *)SB_REALLOC(SB_NULL, sb->size + 1);
+    if (!buf) return SB_NULL;
 
     memcpy(buf, sb->buffer, sb->size);
     buf[sb->size] = '\0';
