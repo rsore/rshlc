@@ -9,7 +9,7 @@ and they are all independent of each other.
 |---------|-------------|------|
 | minitest.h | Minimal test library | https://github.com/rsore/minitest |
 | opt.h | Optional type system | https://github.com/rsore/opt |
-| str.h | String type | https://github.com/rsore/sb |
+| str.h | String type | https://github.com/rsore/str |
 | sv.h | String View type | https://github.com/rsore/sv |
 
 ## License
