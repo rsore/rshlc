@@ -6,6 +6,7 @@ mirrored here for convenient access.
 ## Libraries
 | Library | Description | Link |  License  |
 |---------|-------------|------| --------- |
+| fs.h | File system API | https://github.com/rsore/fs | BSD-3-Clause license |
 | minitest.h | Minimal test library | https://github.com/rsore/minitest | BSD-3-Clause license |
 | opt.h | Optional type system | https://github.com/rsore/opt | BSD-3-Clause license |
 | sp.h | Subprocess management | https://github.com/rsore/sp | BSD-3-Clause license |
